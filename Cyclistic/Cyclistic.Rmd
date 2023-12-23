@@ -1,0 +1,700 @@
+---
+title: "Google Data Analytics Capstone - Cyclistic Company"
+author : "Michal Ciarka"
+output:
+  html_document: 
+    toc: true
+    toc_depth: 2
+---
+<style>
+iframe {
+  width: 100%;
+  height: 400px;
+}
+</style>
+## Introduction
+Hello and welcome to my Capstone Project ! This is the part of the Google Analytics Certificate Course.
+I have decided to perform an analysis for the fictional bike share company called Cyclistic, where I would
+try to make insights for the marketing department in order to influence data-driven decision making.
+In general, the company strategy is to convert people from using the service casually to an annual membership subscription. Based on the available data, I will try to spot the main differences between these two user groups
+and suggest the course of action. I will follow 6 steps of analysis that were taught during the course:
+Ask,Prepare,Process,Analyze,Share,Act
+
+--------------------------------
+
+## Ask
+In this phase, I decided to formulate the questions that I will try to answer in my case study later on.
+
+The **business task** is to find a way for a company to increase the number of annual memberships by offering it 
+to casual users. 
+
+In order to do so, the following questions were formulated:
+
+1. What are the differences between casual users and members? (How they use the service differently)
+2. Why would casual riders buy annual membership?
+3. How can Cyclistic use digital media to influence casual riders to become members?
+
+The **key stakeholders** of this project are:
+
+1. Marketing Analytics Team<br>
+2. My manager and marketing director - Lily Moreno<br>
+
+--------------------------------
+
+## Prepare
+In order to perform the analysis, I was using the data available [here](https://divvy-tripdata.s3.amazonaws.com/index.html).
+The data comes from the company called 'Bikeshare' and gathers the trips that their users has made during the specified period.
+
+It is stored on the server of the company, so it has to be downloaded in order to perform analysis.
+We will deal with that later.
+It is available to use under the [license](https://divvybikes.com/data-license-agreement).<br>
+In general, it is available to use for the purpose of data analysis as it is, except the fact that you cannot 
+connect the data with another data source without breaching the privacy of the data. 
+
+So, for example, we cannot pair the ride with actual customer(for example by using credit card data). This
+might be our limitation. Because, let's say that we want to calculate how many rides a month a typical membership customer does. We will not be able to do it, because we don't know how many actual customers we have.
+
+Let's start with preparing the data first. I decided to use R language, because the data set will be very large,
+so it's impossible to do it in Excel/Google Sheets. I would also like to do some visualization at the same time and document it in one place, so R sounds like a great tool for it.
+
+So, first of all, let's install the required packages
+
+```{r install_packages, eval=TRUE, echo=TRUE, results='hide', error=FALSE, message=FALSE}
+
+install.packages("tidyverse")      ##package useful for working with data
+install.packages("httr")           ##package for making requests
+install.packages("ggplot2")        ##package for visualization
+install.packages("leaflet")        ##
+install.packages("leaflet.extras") ##package for maps
+install.packages("htmlwidgets")    ##for saving map as html
+install.packages("htmltools")      ##for saving map as html
+
+suppressPackageStartupMessages(library(httr))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(leaflet))
+suppressPackageStartupMessages(library(leaflet.extras))
+suppressPackageStartupMessages(library(htmlwidgets))
+suppressPackageStartupMessages(library(htmltools))
+```
+I would like to download all the data from the server to my project folder, so I made it with a loop of requests to the company server in order to retrieve all the months. I checked the URL of the request by inspecting the website provided by the project (using the inspect option in the browser). The data is separated by months so I need to download them separately. 
+
+Since the data is for public use, I didn't bother with storing it in a protected location, because there is no need for that. If the data was containing sensitive data, I would choose different storage (for example password protected Google Drive or database).
+
+Here is a code chunk that I have used in order to download, unpack and copy the .csv file to the data sub folder.
+It works in a way that checks if the corresponding file exists in the folder, and if not, downloads it. Now all the data are in the folder so it will not make any request.
+
+```{r download_files, warning=FALSE}
+setwd("data") # Folder in my project for storing the data
+download_files <- function() {
+  months <- c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11")  # December not available yet
+  csv_files <- list.files(pattern = "divvy-tripdata.csv")
+  
+  make_request <- function(month) {
+    url <- paste("https://divvy-tripdata.s3.amazonaws.com/2023", month, "-divvy-tripdata.zip", sep='')
+    response <- httr::GET(url)
+    
+    if (http_status(response)$category == "Success") {
+      
+      local_file_path <- paste(getwd(), "/", month, ".zip", sep="")
+      writeBin(content(response, type = "raw"), local_file_path)
+      filename <- paste("2023",month,"-divvy-tripdata.csv",sep="")
+      zip_connection <- unz(local_file_path, filename)
+      csv_content <- read.csv(zip_connection)
+      file.remove(local_file_path)
+      write.csv(csv_content, file = filename, row.names = FALSE)
+      
+      print(paste(filename,"download done!"))
+    } else {
+      print(paste(filename,"download error"))
+    }
+    
+    return(httr::status_code(response))
+  }
+  
+  for(month in months){
+    if(paste("2023",month,"-divvy-tripdata.csv",sep="") %in% csv_files)
+      next
+    else
+      make_request(month)
+  }
+}
+tryCatch(expr=download_files(),finally=setwd("../"))
+```
+
+Now that we have all the files in the "data" folder, we can now work with it further. Since we do not really want to work on multiple data frames and would rather work on one, we need to join all the months into one (for example, if I want to show the differences between the months on the same visualization or summarize the whole year). But first of all, we need to check the integrity of the data. What I want to check at this point is:
+
+1. Do all the data frames have the same columns ?
+2. Is the data within the same column name of the same type?
+
+By running the following code I verified the data integrity (same column names and data type):
+
+```{r check_columns, echo=TRUE, warning=FALSE}
+setwd("data")
+check_columns <- function() {
+  csv_dictionary <- list()
+  wrong_columns <- list()
+  csv_files = list.files(pattern = "divvy-tripdata.csv")
+  
+  for (file in csv_files) {
+    dictionary <- list(filename = file, columns = list())
+    csv <- read.csv(file, header = TRUE, nrows = 1000)
+    
+    for (column in colnames(csv)) {
+      column_info <-
+        list(colname = column, data_type = class(csv[[column]]))
+      
+      dictionary$columns <-
+        append(dictionary$columns, list(column_info))
+    }
+    
+    dictionary$columns <-
+      dictionary$columns[order(sapply(dictionary$columns, function(x)
+        x$colname))]
+    csv_dictionary <- append(csv_dictionary, list(dictionary))
+    
+  }
+  
+  for (i in seq_along(csv_dictionary)) {
+    reference <- csv_dictionary[i][[1]]
+    compared_list  <- csv_dictionary[-i]
+    
+    for (item in compared_list)
+    {
+      if (!identical(reference$columns, item$columns)) {
+        wrong_columns <-
+          append(
+            wrong_columns,
+            paste(
+              item$filename,
+              "has different columns than",
+              reference$filename
+            )
+          )
+      }
+      
+    }
+  }
+  if (length(wrong_columns) > 0)
+  {
+    for (column in wrong_columns) {
+      print(column)
+      
+    }
+    return (FALSE)
+  }
+  else{
+    return (TRUE)
+  }
+}
+
+correct_columns <- tryCatch(
+  expr = check_columns(),
+  finally = setwd("../")
+)
+
+if(correct_columns){
+  print("Success: All the columns are the same for every file!")
+}
+
+```
+Now that we checked that everything is correct, we can continue with merging all the .csv files into one by the following code:
+```{r merge_files, warning=FALSE}
+setwd("data")
+
+merge_files <- function() {
+  csv_files <- list.files(pattern = "divvy-tripdata.csv")
+  total_files <- list.files(pattern = "data_total.csv")
+  
+  if (correct_columns && length(total_files) == 0) {
+    combined_df <- data.frame()
+    for (file in csv_files) {
+      temp_df <- read.csv(file) %>%  mutate(filename = file)
+      combined_df <- bind_rows(combined_df, temp_df)
+    }
+    write.csv(combined_df, "data_total.csv")
+  }
+}
+tryCatch(
+  expr = merge_files(),
+  finally = setwd("../")
+)
+```
+
+Now, we can load it the .csv as data-frame and take a look again at the data structure.
+```{r load_and_summarize dataframe}
+setwd('data')
+if(!exists("data_total"))
+  data_total <- read.csv('data_total.csv')
+glimpse(data_total)
+```
+
+So, as we can see here, our data is organized into 15 columns and the type of data looks correct.
+I would like to check one thing : **are the entries unique?** We do not want any duplicates in our data as it will produce incorrect results in the further stages. Let's look at the ride_id column and check if the entries are unique in here:
+
+```{r check_id}
+if (any(duplicated(data_total$ride_id))) {
+  print("There are duplicates in the 'ride_id' column.")
+} else {
+  print("All 'ride_id' values are unique.")
+}
+
+```
+
+
+Also, we can check which columns contain empty values:
+```{r check_empty_values}
+empty_values <- sapply(data_total, function(x) any(is.na(x) | x == ""))
+print(names(empty_values)[empty_values])
+```
+Doesn't look bad. Every entry has bike type, start and end time of the ride and member type.
+But we will investigate it further in the "Process" stage, because we might delete these entries as they might be corrupted.
+
+We might not have every names and ids of the stations (possibly because the ride started/ended in less standard location) and sometimes we do not have coordinates for the ending of the ride. This might be problematic if we want to calculate the length of the ride using the map library.
+
+The columns started_at and ended_at are in string format, and as I would like to perform datetime operations on them, I will convert them using this code. We have to be careful, because the data string in first month is different than other months !
+
+```{r parse_datetime}
+
+data_total_modified <- data_total %>%
+  mutate(
+    ended_at = parse_date_time(ended_at, orders = c("mdy_HM", "ymd_HMS")),
+    started_at = parse_date_time(started_at, orders = c("mdy_HM", "ymd_HMS")),
+  )
+
+```
+
+And also check if the conversion is done properly by running following code (we can check if the dates are actually correct within the file name)
+
+```{r check_parse}
+data_total_modified %>% 
+  group_by(filename) %>%
+  summarize(min(started_at),max(started_at))
+```
+It looks correct, all the data are within the month range.
+
+Let's check if we have any missing values in there after converting
+```{r check_na_dates}
+data_total_modified %>% filter(is.na(started_at) | is.na(ended_at)) %>% count()
+```
+Looks correct, data has been parsed properly.
+
+Now, before we move on, let's check how many entries we have for each customer type and if the sample size is good enough for both:
+
+```{r check_cust_type, warning=FALSE}
+data_total_modified %>%
+  group_by(month = format(started_at, "%m")) %>%
+  summarize(count = n()) %>%
+  ungroup() %>%
+  pivot_wider(names_from = month, values_from = count, values_fill = 0)
+```
+It looks enough to perform analysis for each month.
+
+Finally, let's sort the data based on the starting date of the ride:
+
+```{r sort_data}
+df_bikes <- data_total_modified %>%
+  arrange(started_at)
+
+rm(data_total_modified)
+```
+
+### Prepare Summary
+
+So, to summarize: 
+
+1. I downloaded the data and put them in my local folder (no reason to secure it)
+2. I merged all the .csv files into one so I can use it within one data frame, but first checking if the data can be merged.
+3. I checked for columns with missing entries, which we will investigate further.
+4. I checked if all the values ride_id are unique so we won't have duplicates.
+5. I checked if the sample size is big enough to draw conclusions.
+6. I sorted the data according to the start date of the ride.
+
+We will look further into cleaning data and preparing for analysis in the later stage.
+
+As for the limitation of data:
+
+1. No customer information, not even customer ID that we can pair with the rides that he makes which will make it impossible to answer some questions, like : how many rides on average a typical user makes ? What is the age/gender/location of certain group etc.
+2. No information about the pricing or pricing survey for the rides, so we do not know how we can modify the price for the membership to make it more appealing 
+
+But the following questions can be answered:
+1. What is the most popular day of the week for the customer group?
+2. What is the most popular season/month?
+3. The most used location?
+4. The average length of the ride of user group?
+5. The most preferred bike type?
+ 
+--------------------------------
+
+## Process Data
+
+In this stage, I will be performing some operation on the data in order to make it suitable for the further analysis in visualization.
+
+First, let's remove the entries with any missing values.
+
+Also, I decided to drop the columns with ID and name of the station as we will not be needing them and there might be some inconsistency with the data (for example multiple IDs attached to the same name or the other way around). We will visualize locations on the map anyway using the coordinates (that all the entries will have).
+
+They also might contain the missing values.
+
+```{r drop_na}
+df_bikes <- df_bikes %>% 
+             drop_na() %>%
+             select(-end_station_name,-end_station_id,-start_station_name,-start_station_id)
+```
+
+
+Also, let's add the ride_duration column to our data.
+```{r add_ride_duration}
+df_bikes <- df_bikes %>%
+                        mutate(ride_duration = ended_at - started_at)
+```
+
+Now that we have the column, we can check if the values look reasonable
+
+```{r check_ride_duration}
+df_bikes %>% summarize(min(ride_duration))
+df_bikes %>% summarize(max(ride_duration))
+```
+
+Something is wrong in some entries, as obviously duration cannot be lower than zero. I decided to keep the data with duration of zero, it means that customer simply began and finished the ride which we can also include in our analysis.
+
+Also, there are some rides with unreasonably long duration, this data is probably also corrupted, but shouldn't be significant while applying some functions like average or median, because there are single events, and also it's hard to estimate the criteria for dropping the entries (also, the ride most likely happened so I want to store the locations and bike type + customer membership of the ride)
+
+Let's see, how many entries we have with such condition:
+
+```{r find_negative_duration}
+df_bikes %>% filter(ride_duration < 0) %>% count()
+
+```
+
+Not many, we can remove it from the data frame then:
+
+```{r remove_negative_duration}
+df_bikes <- df_bikes %>% filter(ride_duration >= 0)
+```
+
+And let's add some additional columns that will be helpful:
+```{r add_month_and_dayofweek}
+df_bikes <- df_bikes %>%
+  mutate(
+    month = format(started_at, "%m"),
+    day_of_week = weekdays(started_at),
+    day_of_week_numeric = match(
+      day_of_week,
+      c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
+    ),
+    hour = format(started_at,"%H")
+  )
+```
+
+### Process Summary
+
+In order to process the data for the analysis:
+
+1. I removed the columns with ids and names of the stations, because I don't need them in my analysis.
+2. I dropped the entries with no coordinates (because it was just a few of them).
+3. I added additional column which calculates the duration of the ride.
+4. I added columns: day_of_week,month and hour to help me with further analysis
+
+--------------------------------
+
+## Analyze and use visualization
+Now that the data is ready, we can analyze it in order to find any patterns.
+
+Let's start with basic question : how many rides in total were there in a given month?
+
+Here is the plot:
+
+```{r plot_n_of_rides}
+df_bikes %>%
+  group_by(month, member_casual) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = month, y = count, fill = member_casual)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ggtitle("Number of Rides by Month") +
+  xlab("Month") +
+  ylab("Number of Rides") +
+  scale_y_continuous(breaks = seq(0, 600000, by = 50000)) +
+  labs(fill = "Customer Type", x = "",y="") +  # Change legend name
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+On this bar graph we can observe that:
+
+1. Members have more rides on every month.
+2. For both customer types the most popular months are warm, summer months (June, July and August)
+3. Casual customers peak is in July, but Members in August
+4. We don't have data for December yet but we can safely assume that it will not change the general trend as we can clearly    see the correlation between the temperature and usage of the bikes.
+
+
+Now, let's try to see the same data, but for the day of the week:
+```{r}
+df_bikes %>%
+  group_by(day_of_week, member_casual) %>%
+  summarise(count = n()) %>%
+  mutate(day_of_week = factor(
+    day_of_week,
+    levels = c(
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+      "Sunday"
+    )
+  )) %>%
+  ggplot(aes(x = day_of_week, y = count, fill = member_casual)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ggtitle("Number of Rides by Day of Week") +
+  ylab("Number of Rides") +
+  scale_y_continuous(breaks = seq(0, 800000, by = 50000)) +
+  labs(fill = "Customer Type", x = "", y = "") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+This is interesting finding. So, according to this graph:
+
+1. For the casual customer, the most popular days of week are Friday, Saturday and Sunday (weekend).
+2. For the membership customer, the most popular are Tuesday, Wednesday and Thursday (middle of the week)
+
+This is the difference I would like to point out during my analysis.
+
+Now, let's check the average duration of the trip for the customer groups:
+
+```{r warning=FALSE}
+df_bikes %>%
+  group_by(month,member_casual) %>%
+  summarize(avg_duration = round(as.numeric(mean(ride_duration))/60)) %>%
+  ggplot(aes(x = month, y = avg_duration, fill = member_casual)) +
+  ggtitle("Average duration of the ride") +
+  geom_bar(stat = "identity", position = "dodge")+
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))+
+  labs(fill = "Customer Type", x = "Month", y = "Minutes")
+```
+
+According to this graph and to the one with the number of rides each month, we can conclude, that despite the fact, that casual customers have less bike rides every month, their average duration of the ride is also higher and it reaches its peak also in July.
+
+Also, there are bigger differences in the average duration throughout the months for casual riders compared to members:
+
+```{r, warning = FALSE}
+df_bikes %>%
+  group_by(month,member_casual) %>%
+  summarize(avg_duration = round(as.numeric(mean(ride_duration))/60)) %>%
+  group_by(member_casual) %>%
+  summarize(avg = round(mean(avg_duration),2),min_avg_duration = min(avg_duration),max_avg_duration = max(avg_duration),std_dev = round(sd(avg_duration),2))
+```
+
+We already know the customers preferences for the day of the week and month. Let's now check which hours are the most preferred :
+
+```{r warning=FALSE}
+df_bikes %>%
+  group_by(member_casual, hour) %>%
+  summarize(count = n()) %>%
+  ggplot(aes(x = as.numeric(hour), y = count, color = member_casual, group = member_casual)) +
+  geom_line(size = 1) +
+  ggtitle("Number of Rides by Hour") +
+  ylab("Number of Rides") +
+  xlab("Hour of the Day") +
+  theme(plot.title = element_text(hjust = 0.5),legend.title = element_text("Customer type")) +
+  scale_x_continuous(breaks = seq(0, 23, by = 1), labels = sprintf("%02d", seq(0, 23, by = 1))) +
+  scale_y_continuous(breaks = seq(0, 600000, by = 50000)) +
+  labs(color = "Customer Type")
+```
+
+According to this analysis, both of the groups have the peak of number of rides at 5pm.
+However, in case of casual customers we can observe positive trend until 5 PM, and then declining.
+In case of members it is a bit different - it peaks first at around 8AM, and then drops and starts growing again until it reaches its maximum at 5PM.
+This, combined with the fact that member customers have shorter average ride duration, may lead to conclusion that they are using the bikes more consistently for daily tasks (such as commuting to work).
+
+Let's check if there are any differences in the bike type preferences for the customer types:
+
+```{r, warning=FALSE}
+df_bikes %>%
+  group_by(member_casual, rideable_type) %>% 
+  summarize(count = n(),.groups = "keep") %>%
+  group_by(member_casual) %>%
+  mutate(percentage = round(count / sum(count) * 100, 2)) %>%
+  ggplot(aes(x = "", y = percentage, fill = rideable_type)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y") +
+  geom_text(aes(label = paste0(percentage, "%")), position = position_stack(vjust = 0.5)) +
+  facet_grid(. ~ member_casual) +
+  scale_fill_manual(values = c("orange", "yellow", "brown")) +
+  theme_void() +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5, margin = margin(b = -20))) +  # Remove the title and adjust margin
+  labs(fill = "Bike type") +  # Remove the title
+  theme_minimal()
+
+```
+
+The differences are not big, however casual customers are leaning more towards electric bikes than members (for them the preferences are roughly 50/50). Nevertheless, I don't think that we can draw any significant difference from this comparison. Also, member customers do not use the docked bikes at all.
+
+
+Now, for the final analysis I want to check if we can spot any differences between customer groups when it comes to the starting and ending stations of the ride:
+
+<br>
+<br>
+*Starting and ending stations for casual customers:*
+```{r warning=FALSE, include=FALSE}
+sample_data <- df_bikes %>% filter(member_casual == "casual")
+
+location_counts <- sample_data %>%
+  group_by(start_lat, start_lng) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+location_counts$rank <- rank(-location_counts$count, ties.method = "min")
+
+top_locations <- location_counts[1:10, ]
+
+num_colors <- 10
+
+blue_palette <- rev(colorRampPalette(c("lightyellow", "darkgreen"))(num_colors))
+
+map <- leaflet(data = top_locations) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~start_lng,
+    lat = ~start_lat,
+    fillColor = ~blue_palette[rank],  
+    color = "white",  
+    radius = 10,
+    fillOpacity = 1,  
+    popup = ~paste("Rank:", rank, "<br>Count:", count)
+  )
+
+saveWidget(map, file = "map_starting_stations_top10_casual.html", selfcontained = TRUE)
+
+location_counts <- sample_data %>%
+  group_by(end_lat, end_lng) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+location_counts$rank <- rank(-location_counts$count, ties.method = "min")
+
+top_locations <- location_counts[1:10, ]
+
+num_colors <- 10  
+
+blue_palette <- rev(colorRampPalette(c("lightyellow", "darkgreen"))(num_colors))
+
+map <- leaflet(data = top_locations) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~end_lng,
+    lat = ~end_lat,
+    fillColor = ~blue_palette[rank],  
+    color = "white",  
+    radius = 10,
+    fillOpacity = 1,  
+    popup = ~paste("Rank:", rank, "<br>Count:", count)
+  )
+
+saveWidget(map, file = "map_ending_stations_top10_casual.html", selfcontained = TRUE)
+```
+<iframe src="./map_starting_stations_top10_casual.html"></iframe>
+<iframe src="./map_ending_stations_top10_casual.html"></iframe>
+
+<br>
+
+*Starting and ending stations for members customers:*
+
+```{r warning=FALSE, include=FALSE}
+sample_data <- df_bikes %>% filter(member_casual == "member")
+
+location_counts <- sample_data %>%
+  group_by(start_lat, start_lng) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+location_counts$rank <- rank(-location_counts$count, ties.method = "min")
+
+top_locations <- location_counts[1:10, ]
+
+num_colors <- 10
+
+blue_palette <- rev(colorRampPalette(c("lightyellow", "darkgreen"))(num_colors))
+
+map <- leaflet(data = top_locations) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~start_lng,
+    lat = ~start_lat,
+    fillColor = ~blue_palette[rank],  
+    color = "white",  
+    radius = 10,
+    fillOpacity = 1,
+    popup = ~paste("Rank:", rank, "<br>Count:", count)
+  )
+
+saveWidget(map, file = "map_starting_stations_top10_member.html", selfcontained = TRUE)
+
+location_counts <- sample_data %>%
+  group_by(end_lat, end_lng) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+location_counts$rank <- rank(-location_counts$count, ties.method = "min")
+
+top_locations <- location_counts[1:10, ]
+
+num_colors <- 10  
+
+blue_palette <- rev(colorRampPalette(c("lightyellow", "darkgreen"))(num_colors))
+
+map <- leaflet(data = top_locations) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~end_lng,
+    lat = ~end_lat,
+    fillColor = ~blue_palette[rank],  
+    color = "white",  
+    radius = 10,
+    fillOpacity = 1,  
+    popup = ~paste("Rank:", rank, "<br>Count:", count)
+  )
+
+saveWidget(map, file = "map_ending_stations_top10_member.html", selfcontained = TRUE)
+```
+<iframe src="./map_starting_stations_top10_member.html"></iframe>
+<iframe src="./map_ending_stations_top10_member.html"></iframe>
+
+As we can see from the following maps, the most common area for the rides for casual users are mostly in touristic/recreational areas, such as parks and beaches and they are located close to the coastline.
+
+On the other hand, members more popular areas are a bit further from the coast, also closer to the railway/subway.
+
+--------------------------------
+
+## Share and Act
+
+In my final stage of the analysis I will summarize the findings and draw the conclusions that I will share with the stakeholders. During this I will present the visualizations that I have made and also highlight what I have found.
+
+So, to summarize the things I want to share:
+
+1.  **Months**<br>
+    Both casuals and members have similar pattern when it comes to the relationship between month of the year and               the number of the rides (warmer month = highest number of rides). However, for the casual users the peak is on              July as opposed to August for members.In every month members use the bikes more frequently. 
+2.  **Day of the week**<br>
+    Casual riders tend to use bikes more often on the weekends (Fri,Sat,Sun) as opposed to the                                  weekdays for the members (Tue,Wed,Thu)
+3.  **Average trip duration**<br>
+    Casual riders have longer average trip duration than members, which also is influenced by the the month of the year
+    (During peak month casual rider average duration is 23 minutes against 13 minutes of the member ride)
+4.  **Preferred bike type**<br>
+    The preferences between the group are not significantly different, however casual riders lean a bit more towards the
+    electric bikes.
+5.  **Location**<br>
+    Casual riders use the bikes mostly on the areas that are attractive for recreational biking, along the coastline, parks,     beaches, while members are a bit more concentrated in the areas that are close to the communication nodes.
+    
+
+So, if our target group are casual riders, we want to attract people, who use the bikes less frequently, but for longer rides, close to the coast and points of interest, mostly on the weekends and during summer.
+In order to do so, I proposed the following actions:
+
+1. Give discount for longer rides for members.
+2. Increase advertisement activity close to the most frequent locations, such as posters close to Grant Park, 
+   Milton Lee Olive Park,Northerly Island,Lincoln Park Zoo
+3. Special deal for weekend rides for members.
+4. Increase advertisement activity during summer months and special offers for casual customers, so they might consider        buying the membership 
